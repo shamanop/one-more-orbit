@@ -48,8 +48,8 @@ window.addEventListener('resize', resize);
 // ─── Constants ───────────────────────────────────────────────────
 const PLANET_R      = 22;
 const GM            = 14000;   // planet gravity strength
-const PULL_STR      = 2200;    // finger pull acceleration
-const CAPTURE_R     = 200;     // BIG capture zone — liberal
+const PULL_STR      = 4500;    // finger pull acceleration
+const CAPTURE_R     = 110;     // tighter capture zone — must guide moon close
 const MAX_CAP_SPEED = 9999;    // no speed limit — if you're in the zone, you lock
 const MAX_MOONS     = 5;
 const SPAWN_MS      = 5000;
@@ -366,11 +366,6 @@ function draw() {
   }
   ctx.globalAlpha=1;
 
-  // DEBUG: show touch status
-  ctx.font = 'bold 18px monospace';
-  ctx.fillStyle = touch ? '#ff4444' : 'rgba(255,255,255,0.15)';
-  ctx.textAlign = 'center';
-  ctx.fillText(touch ? `TOUCH ${Math.round(touch.x)},${Math.round(touch.y)}` : 'no touch', cx, H-20);
 }
 
 // ─── Boot ────────────────────────────────────────────────────────
