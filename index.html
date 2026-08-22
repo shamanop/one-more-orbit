@@ -6,475 +6,351 @@
 <title>One More Orbit</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { background: #000; overflow: hidden; touch-action: none; }
+  body { background: #000; overflow: hidden; touch-action: none; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
   canvas { display: block; }
-  #ui {
-    position: fixed; top: 24px; left: 0; right: 0;
-    text-align: center; pointer-events: none;
-    font-family: -apple-system, sans-serif; color: #fff;
+
+  #score {
+    position: fixed; top: 28px; left: 0; right: 0;
+    text-align: center; color: #fff; font-size: 52px; font-weight: 200;
+    letter-spacing: 4px; pointer-events: none;
   }
-  #score { font-size: 36px; font-weight: 300; letter-spacing: 2px; }
-  #moons { font-size: 13px; opacity: 0.5; margin-top: 6px; letter-spacing: 1px; text-transform: uppercase; }
-  #hint {
-    position: fixed; bottom: 40px; left: 0; right: 0;
-    text-align: center; pointer-events: none;
-    font-family: -apple-system, sans-serif;
-    font-size: 13px; color: rgba(255,255,255,0.35);
-    letter-spacing: 1px;
-  }
-  #overlay {
+
+  #death {
     display: none; position: fixed; inset: 0;
-    background: rgba(0,0,0,0.85);
-    font-family: -apple-system, sans-serif; color: #fff;
-    flex-direction: column; align-items: center; justify-content: center; gap: 16px;
+    background: rgba(0,0,0,0.88);
+    flex-direction: column; align-items: center; justify-content: center; gap: 20px;
+    color: #fff; cursor: pointer;
   }
-  #overlay.show { display: flex; }
-  #overlay h1 { font-size: 52px; font-weight: 200; letter-spacing: 4px; }
-  #overlay .sub { font-size: 14px; opacity: 0.5; letter-spacing: 2px; text-transform: uppercase; }
-  #overlay .final { font-size: 28px; font-weight: 300; margin: 8px 0; }
-  #restart {
-    margin-top: 12px; padding: 12px 40px; font-size: 16px;
-    background: transparent; color: #fff; border: 1px solid rgba(255,255,255,0.4);
-    border-radius: 40px; cursor: pointer; letter-spacing: 2px;
-    transition: background 0.2s;
-  }
-  #restart:hover { background: rgba(255,255,255,0.1); }
+  #death.show { display: flex; }
+  #death h1 { font-size: 56px; font-weight: 100; letter-spacing: 6px; }
+  #death .pts { font-size: 22px; font-weight: 300; opacity: 0.6; letter-spacing: 2px; }
+  #death .tap { font-size: 15px; opacity: 0.35; letter-spacing: 3px; text-transform: uppercase; margin-top: 8px; }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
-<div id="ui">
-  <div id="score">0</div>
-  <div id="moons">0 moons in orbit</div>
-</div>
-<div id="hint">hold anywhere to pull · release to orbit</div>
-<div id="overlay">
+<div id="score">0</div>
+<div id="death">
   <h1>collapse</h1>
-  <div class="sub">your system fell apart</div>
-  <div class="final" id="final-score"></div>
-  <button id="restart">one more orbit</button>
+  <div class="pts" id="final"></div>
+  <div class="tap">tap to restart</div>
 </div>
 
 <script>
+// ─── Canvas setup ────────────────────────────────────────────────
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
-
 let W, H, cx, cy;
-function resize() {
-  W = canvas.width = window.innerWidth;
-  H = canvas.height = window.innerHeight;
-  cx = W / 2; cy = H / 2;
-}
+function resize() { W = canvas.width = innerWidth; H = canvas.height = innerHeight; cx = W/2; cy = H/2; }
 resize();
 window.addEventListener('resize', resize);
 
-// Physics
-const PLANET_R = 22;
-const GM = 22000;
-const TOUCH_FORCE = 3200;
-const CAPTURE_RADIUS = 160;  // ring where release locks moons into orbit
-const MIN_TANGENTIAL = 0.25; // min tangential fraction needed to lock (very forgiving)
+// ─── Constants ───────────────────────────────────────────────────
+const PLANET_R      = 22;
+const GM            = 14000;   // planet gravity strength
+const PULL_STR      = 500;     // finger pull acceleration (pixels/s² at 1px distance — falls off with dist)
+const CAPTURE_R     = 150;     // radius within which release locks orbit
+const MAX_CAP_SPEED = 160;     // max speed allowed for capture (generous)
+const MAX_MOONS     = 5;       // cap on screen at once
+const SPAWN_MS      = 5000;    // ms between spawns
 
-// Colors (pentatonic palette)
-const COLORS = ['#7ecef4','#f4c06f','#f47e7e','#a8f47e','#d07ef4','#f4a87e','#7ef4d0'];
-const FREQS  = [261.63, 293.66, 329.63, 392.00, 440.00, 523.25, 587.33]; // C major pentatonic
+// ─── Audio ───────────────────────────────────────────────────────
+let ac;
+function audio() { if (!ac) ac = new (AudioContext || webkitAudioContext)(); return ac; }
 
-// Audio
-let audioCtx;
-function getAudio() {
-  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  return audioCtx;
+function beep(freq, dur = 0.45, vol = 0.35) {
+  const a = audio(), osc = a.createOscillator(), g = a.createGain();
+  osc.connect(g); g.connect(a.destination);
+  osc.frequency.value = freq; osc.type = 'sine';
+  g.gain.setValueAtTime(vol, a.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, a.currentTime + dur);
+  osc.start(); osc.stop(a.currentTime + dur);
 }
 
-const orbitNodes = new Map(); // moonId -> { osc, gain }
-
-function playClick(freq) {
-  const ac = getAudio();
-  const osc = ac.createOscillator();
-  const g = ac.createGain();
-  osc.connect(g); g.connect(ac.destination);
-  osc.frequency.value = freq;
-  osc.type = 'sine';
-  g.gain.setValueAtTime(0.4, ac.currentTime);
-  g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.6);
-  osc.start(); osc.stop(ac.currentTime + 0.6);
-}
-
-function playBoom() {
-  const ac = getAudio();
-  const buf = ac.createBuffer(1, ac.sampleRate * 0.4, ac.sampleRate);
-  const data = buf.getChannelData(0);
-  for (let i = 0; i < data.length; i++) data[i] = (Math.random()*2-1) * Math.pow(1 - i/data.length, 3);
-  const src = ac.createBufferSource();
-  const g = ac.createGain();
-  src.buffer = buf; src.connect(g); g.connect(ac.destination);
-  g.gain.value = 0.3;
+function boom() {
+  const a = audio(), buf = a.createBuffer(1, a.sampleRate * 0.35, a.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < d.length; i++) d[i] = (Math.random()*2-1) * (1 - i/d.length) ** 2;
+  const src = a.createBufferSource(), g = a.createGain();
+  src.buffer = buf; src.connect(g); g.connect(a.destination); g.gain.value = 0.25;
   src.start();
 }
 
-function startOrbitHum(id, freq) {
-  const ac = getAudio();
-  const osc = ac.createOscillator();
-  const g = ac.createGain();
-  osc.connect(g); g.connect(ac.destination);
-  osc.frequency.value = freq;
-  osc.type = 'sine';
-  g.gain.value = 0.06;
+// Sustained hum per orbiting moon
+const hums = new Map();
+function startHum(id, freq) {
+  const a = audio(), osc = a.createOscillator(), g = a.createGain();
+  osc.connect(g); g.connect(a.destination);
+  osc.frequency.value = freq; osc.type = 'sine'; g.gain.value = 0.055;
   osc.start();
-  orbitNodes.set(id, { osc, g });
+  hums.set(id, { osc, g });
 }
-
-function stopOrbitHum(id) {
-  const node = orbitNodes.get(id);
-  if (!node) return;
-  const ac = getAudio();
-  node.g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.4);
-  node.osc.stop(ac.currentTime + 0.4);
-  orbitNodes.delete(id);
+function stopHum(id) {
+  const h = hums.get(id); if (!h) return;
+  h.g.gain.exponentialRampToValueAtTime(0.001, audio().currentTime + 0.3);
+  h.osc.stop(audio().currentTime + 0.3);
+  hums.delete(id);
 }
+function stopAllHums() { [...hums.keys()].forEach(stopHum); }
 
-function stopAllHums() {
-  for (const id of orbitNodes.keys()) stopOrbitHum(id);
-}
+// ─── Palette ─────────────────────────────────────────────────────
+const COLORS = ['#7ecef4','#f4c06f','#f47e7e','#a8f47e','#d07ef4','#f4a87e','#7ef4d0'];
+const NOTES  = [261.63, 293.66, 329.63, 392.00, 440.00, 523.25, 587.33];
 
-// Stars
+// ─── Stars ───────────────────────────────────────────────────────
 let stars = [];
-function initStars() {
-  stars = Array.from({length: 120}, () => ({
-    x: Math.random() * W, y: Math.random() * H,
-    r: Math.random() * 1.2 + 0.2,
-    a: Math.random() * 0.6 + 0.1
+function mkStars() {
+  stars = Array.from({length:100}, () => ({
+    x: Math.random()*W, y: Math.random()*H,
+    r: Math.random()*1.1+0.2, a: Math.random()*0.5+0.1
   }));
 }
-initStars();
+mkStars();
 
-// Game state
-let moons = [], particles = [];
-let score = 0, dead = false;
-let touch = null, holdTime = 0;
-let spawnTimer = 0;
-let spawnInterval = 4500;
-let moonId = 0;
+// ─── Game state ──────────────────────────────────────────────────
+let moons = [], particles = [], score = 0, dead = false, uid = 0;
+let touch = null, spawnTimer = 0;
 
-function spawnMoon() {
-  const edge = Math.floor(Math.random() * 4);
-  const ci = Math.floor(Math.random() * COLORS.length);
-  const r = 9 + Math.random() * 13;
+function mkMoon() {
+  const edge = Math.floor(Math.random()*4);
+  const ci   = Math.floor(Math.random()*COLORS.length);
+  const r    = 9 + Math.random()*12;
+  const spd  = 28 + Math.random()*38;
+  const nudge = () => (Math.random()-0.5)*18;
   let x, y, vx, vy;
-  const spd = 22 + Math.random() * 35;
-  const drift = () => (Math.random() - 0.5) * 30;
-
-  if (edge === 0) { x = Math.random()*W; y = -r;   vx = (cx-x)*0.08+drift(); vy = spd; }
-  else if (edge === 1) { x = W+r; y = Math.random()*H; vx = -spd; vy = (cy-y)*0.08+drift(); }
-  else if (edge === 2) { x = Math.random()*W; y = H+r; vx = (cx-x)*0.08+drift(); vy = -spd; }
-  else  { x = -r; y = Math.random()*H; vx = spd; vy = (cy-y)*0.08+drift(); }
-
-  moons.push({ id: moonId++, x, y, vx, vy, r, color: COLORS[ci], freq: FREQS[ci % FREQS.length],
-    orbiting: false, orbitR: 0, orbitAngle: 0, orbitDir: 1 });
+  if      (edge===0) { x=Math.random()*W; y=-r;   vx=(cx-x)*0.06+nudge(); vy=spd;  }
+  else if (edge===1) { x=W+r; y=Math.random()*H;   vx=-spd;  vy=(cy-y)*0.06+nudge(); }
+  else if (edge===2) { x=Math.random()*W; y=H+r;   vx=(cx-x)*0.06+nudge(); vy=-spd; }
+  else               { x=-r;  y=Math.random()*H;   vx=spd;   vy=(cy-y)*0.06+nudge(); }
+  return { id:uid++, x, y, vx, vy, r, color:COLORS[ci], freq:NOTES[ci%NOTES.length],
+           orbiting:false, orbitR:0, orbitAngle:0, orbitDir:1 };
 }
 
-function explode(x, y, color, n = 18) {
-  for (let i = 0; i < n; i++) {
-    const a = Math.random() * Math.PI * 2;
-    const spd = 40 + Math.random() * 130;
-    particles.push({ x, y, vx: Math.cos(a)*spd, vy: Math.sin(a)*spd,
-      r: 1.5 + Math.random()*3.5, color, life: 1, decay: 0.018 + Math.random()*0.025 });
+function burst(x, y, color, n=20) {
+  for (let i=0; i<n; i++) {
+    const a=Math.random()*Math.PI*2, s=50+Math.random()*120;
+    particles.push({ x, y, vx:Math.cos(a)*s, vy:Math.sin(a)*s,
+      r:1.5+Math.random()*3, color, life:1, d:0.02+Math.random()*0.025 });
   }
 }
 
-function endGame() {
-  dead = true;
-  stopAllHums();
-  document.getElementById('final-score').textContent = `${score} points`;
-  document.getElementById('overlay').classList.add('show');
+function die() {
+  if (dead) return;
+  dead = true; stopAllHums();
+  document.getElementById('final').textContent = score + (score===1?' moon captured':' moons captured');
+  document.getElementById('death').classList.add('show');
 }
 
-function updateUI() {
-  const n = moons.filter(m => m.orbiting).length;
-  document.getElementById('score').textContent = score;
-  document.getElementById('moons').textContent = `${n} moon${n !== 1 ? 's' : ''} in orbit`;
+function restart() {
+  moons=[]; particles=[]; score=0; dead=false; spawnTimer=0; uid=0;
+  document.getElementById('score').textContent='0';
+  document.getElementById('death').classList.remove('show');
+  // stagger first two moons
+  setTimeout(()=>{ if(!dead) moons.push(mkMoon()); }, 600);
+  setTimeout(()=>{ if(!dead) moons.push(mkMoon()); }, 2400);
+  requestAnimationFrame(frame);
 }
 
-// Input
-function onDown(e) {
-  getAudio(); // unlock audio context on first interaction
-  const pt = e.touches ? e.touches[0] : e;
-  touch = { x: pt.clientX, y: pt.clientY };
-  holdTime = 0;
-}
-function onMove(e) {
-  if (!touch) return;
-  const pt = e.touches ? e.touches[0] : e;
-  touch = { x: pt.clientX, y: pt.clientY };
-}
-function snapToOrbit() {
-  // On release: snap any moon inside capture zone with tangential motion
-  let snapped = false;
+// ─── Capture on release ──────────────────────────────────────────
+function tryCapture() {
+  let any = false;
   for (const m of moons) {
     if (m.orbiting) continue;
-    const dx = cx - m.x, dy = cy - m.y;
-    const dist = Math.sqrt(dx*dx + dy*dy);
-    if (dist > CAPTURE_RADIUS || dist < PLANET_R + m.r + 5) continue;
-
-    const spd = Math.sqrt(m.vx*m.vx + m.vy*m.vy);
-    if (spd < 0.5) continue;
-
-    // How tangential is the velocity? (0 = radial, 1 = tangential)
-    const rx = dx/dist, ry = dy/dist;
-    const radialComponent = Math.abs(m.vx * (-rx) + m.vy * (-ry)) / spd;
-    const tangentialFraction = 1 - radialComponent;
-
-    if (tangentialFraction > MIN_TANGENTIAL) {
-      // Determine orbit direction from cross product
-      const crossZ = (-rx) * m.vy - (-ry) * m.vx;
-      m.orbiting = true;
-      m.orbitR = dist;
-      m.orbitAngle = Math.atan2(m.y - cy, m.x - cx);
-      m.orbitDir = crossZ >= 0 ? 1 : -1;
-      m.vx = 0; m.vy = 0;
-
-      const n = moons.filter(o => o.orbiting).length;
-      score += Math.round(dist * n * 0.8 + 50);
-      playClick(m.freq);
-      startOrbitHum(m.id, m.freq);
-      document.getElementById('hint').style.opacity = '0';
-      snapped = true;
+    const dx = cx-m.x, dy = cy-m.y;
+    const dist = Math.sqrt(dx*dx+dy*dy);
+    const spd  = Math.sqrt(m.vx*m.vx+m.vy*m.vy);
+    if (dist < CAPTURE_R && spd < MAX_CAP_SPEED && dist > PLANET_R+m.r+2) {
+      // Determine direction from cross product of (outward radial) × velocity
+      const rx=-dx/dist, ry=-dy/dist;
+      const cross = rx*m.vy - ry*m.vx;
+      m.orbiting   = true;
+      m.orbitR     = dist;
+      m.orbitAngle = Math.atan2(m.y-cy, m.x-cx);
+      m.orbitDir   = cross >= 0 ? 1 : -1;
+      m.vx = m.vy  = 0;
+      score++;
+      document.getElementById('score').textContent = score;
+      beep(m.freq);
+      startHum(m.id, m.freq);
+      any = true;
     }
   }
-  if (snapped) updateUI();
+  return any;
 }
 
-function onUp() {
-  if (touch && !dead) snapToOrbit();
-  touch = null;
-  holdTime = 0;
-}
+// ─── Input ───────────────────────────────────────────────────────
+function pt(e) { return e.touches ? e.touches[0] : e; }
+canvas.addEventListener('mousedown',  e => { audio(); touch={x:pt(e).clientX,y:pt(e).clientY}; });
+canvas.addEventListener('mousemove',  e => { if(touch) touch={x:pt(e).clientX,y:pt(e).clientY}; });
+canvas.addEventListener('mouseup',    () => { tryCapture(); touch=null; });
+canvas.addEventListener('touchstart', e => { e.preventDefault(); audio(); touch={x:pt(e).clientX,y:pt(e).clientY}; }, {passive:false});
+canvas.addEventListener('touchmove',  e => { e.preventDefault(); if(touch) touch={x:pt(e).clientX,y:pt(e).clientY}; }, {passive:false});
+canvas.addEventListener('touchend',   e => { e.preventDefault(); tryCapture(); touch=null; }, {passive:false});
 
-canvas.addEventListener('mousedown', onDown);
-canvas.addEventListener('mousemove', onMove);
-canvas.addEventListener('mouseup', onUp);
-canvas.addEventListener('touchstart', e => { e.preventDefault(); onDown(e); }, {passive:false});
-canvas.addEventListener('touchmove', e => { e.preventDefault(); onMove(e); }, {passive:false});
-canvas.addEventListener('touchend', e => { e.preventDefault(); onUp(); }, {passive:false});
+document.getElementById('death').addEventListener('click', restart);
+document.getElementById('death').addEventListener('touchstart', e => { e.preventDefault(); restart(); }, {passive:false});
 
-document.getElementById('restart').addEventListener('click', () => {
-  moons = []; particles = []; score = 0; dead = false;
-  spawnTimer = 0; spawnInterval = 4500; moonId = 0;
-  document.getElementById('overlay').classList.remove('show');
-  document.getElementById('hint').style.opacity = '1';
-  updateUI();
-  setTimeout(() => spawnMoon(), 600);
-  setTimeout(() => spawnMoon(), 2200);
-  requestAnimationFrame(loop);
-});
-
+// ─── Main loop ───────────────────────────────────────────────────
 let last = 0;
-
-function loop(ts) {
+function frame(ts) {
   if (dead) return;
-  const dt = Math.min((ts - last) / 1000, 0.05);
+  const dt = Math.min((ts-last)/1000, 0.05);
   last = ts;
 
-  if (touch) holdTime += dt;
-  const pullStr = touch ? Math.min(holdTime / 0.5, 1) * TOUCH_FORCE : 0;
-
   // Spawn
-  spawnTimer += dt * 1000;
-  if (spawnTimer > spawnInterval) {
-    spawnMoon();
+  spawnTimer += dt*1000;
+  if (spawnTimer > SPAWN_MS && moons.length < MAX_MOONS) {
+    moons.push(mkMoon());
     spawnTimer = 0;
-    spawnInterval = Math.max(2000, spawnInterval - 80); // accelerate slightly
   }
 
   const remove = new Set();
 
   for (const m of moons) {
     if (m.orbiting) {
-      // Perfect circle
-      const orbitSpd = Math.sqrt(GM / m.orbitR) / m.orbitR;
-      m.orbitAngle += orbitSpd * m.orbitDir * dt;
-      m.x = cx + Math.cos(m.orbitAngle) * m.orbitR;
-      m.y = cy + Math.sin(m.orbitAngle) * m.orbitR;
+      // Advance along perfect circle
+      const w = Math.sqrt(GM/m.orbitR)/m.orbitR; // angular velocity
+      m.orbitAngle += w * m.orbitDir * dt;
+      m.x = cx + Math.cos(m.orbitAngle)*m.orbitR;
+      m.y = cy + Math.sin(m.orbitAngle)*m.orbitR;
       continue;
     }
 
     // Planet gravity
-    const dx = cx - m.x, dy = cy - m.y;
-    const dist = Math.sqrt(dx*dx + dy*dy);
+    const dx=cx-m.x, dy=cy-m.y, dist=Math.sqrt(dx*dx+dy*dy);
 
-    // Hit planet
-    if (dist < PLANET_R + m.r) {
-      explode(m.x, m.y, m.color, 35);
-      playBoom();
-      endGame();
-      return;
+    // Hit planet → game over
+    if (dist < PLANET_R+m.r) { burst(m.x,m.y,m.color,30); boom(); die(); return; }
+
+    const g = GM/(dist*dist);
+    m.vx += (dx/dist)*g*dt;
+    m.vy += (dy/dist)*g*dt;
+
+    // Finger pull — soft and continuous toward touch point
+    if (touch) {
+      const fx=touch.x-m.x, fy=touch.y-m.y;
+      const fd=Math.sqrt(fx*fx+fy*fy)+1;
+      const f = PULL_STR / fd; // force falls off with distance
+      m.vx += (fx/fd)*f*dt;
+      m.vy += (fy/fd)*f*dt;
     }
 
-    const grav = GM / (dist * dist);
-    m.vx += (dx/dist) * grav * dt;
-    m.vy += (dy/dist) * grav * dt;
+    m.x += m.vx*dt;
+    m.y += m.vy*dt;
 
-    // Touch pull
-    if (touch && pullStr > 0) {
-      const tx = touch.x - m.x, ty = touch.y - m.y;
-      const td = Math.sqrt(tx*tx + ty*ty) + 80;
-      const tf = pullStr / (td * td) * 6000;
-      m.vx += (tx / Math.sqrt(tx*tx+ty*ty)) * tf * dt;
-      m.vy += (ty / Math.sqrt(tx*tx+ty*ty)) * tf * dt;
-    }
-
-    m.x += m.vx * dt;
-    m.y += m.vy * dt;
-
-    // Flew off screen
-    if (m.x < -300 || m.x > W+300 || m.y < -300 || m.y > H+300) remove.add(m.id);
+    // Off-screen → silently gone
+    if (m.x<-250||m.x>W+250||m.y<-250||m.y>H+250) remove.add(m.id);
   }
 
-  // Moon-moon collisions
-  for (let i = 0; i < moons.length; i++) {
+  // Moon-moon collision → game over
+  for (let i=0; i<moons.length; i++) {
     if (remove.has(moons[i].id)) continue;
-    for (let j = i+1; j < moons.length; j++) {
+    for (let j=i+1; j<moons.length; j++) {
       if (remove.has(moons[j].id)) continue;
-      const a = moons[i], b = moons[j];
-      const dx = a.x - b.x, dy = a.y - b.y;
-      if (dx*dx + dy*dy < (a.r+b.r)*(a.r+b.r)) {
-        explode((a.x+b.x)/2, (a.y+b.y)/2, a.color, 14);
-        explode((a.x+b.x)/2, (a.y+b.y)/2, b.color, 14);
-        playBoom();
-        if (a.orbiting) { score = Math.max(0, score - 80); stopOrbitHum(a.id); }
-        if (b.orbiting) { score = Math.max(0, score - 80); stopOrbitHum(b.id); }
-        remove.add(a.id); remove.add(b.id);
-        updateUI();
+      const a=moons[i], b=moons[j];
+      const dx=a.x-b.x, dy=a.y-b.y;
+      if (dx*dx+dy*dy < (a.r+b.r)*(a.r+b.r)) {
+        burst((a.x+b.x)/2,(a.y+b.y)/2,a.color,16);
+        burst((a.x+b.x)/2,(a.y+b.y)/2,b.color,16);
+        boom(); die(); return;
       }
     }
   }
 
-  moons = moons.filter(m => !remove.has(m.id));
+  moons = moons.filter(m=>!remove.has(m.id));
 
   // Particles
   for (const p of particles) {
-    p.x += p.vx * dt; p.y += p.vy * dt;
-    p.vx *= 0.92; p.vy *= 0.92;
-    p.life -= p.decay;
+    p.x+=p.vx*dt; p.y+=p.vy*dt; p.vx*=0.92; p.vy*=0.92; p.life-=p.d;
   }
-  particles = particles.filter(p => p.life > 0);
+  particles = particles.filter(p=>p.life>0);
 
   draw();
-  requestAnimationFrame(loop);
+  requestAnimationFrame(frame);
 }
 
+// ─── Draw ────────────────────────────────────────────────────────
 function draw() {
-  // Background
-  ctx.fillStyle = '#04040f';
-  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle='#04040f';
+  ctx.fillRect(0,0,W,H);
 
   // Stars
   for (const s of stars) {
-    ctx.globalAlpha = s.a;
-    ctx.fillStyle = '#fff';
-    ctx.beginPath();
-    ctx.arc(s.x, s.y, s.r, 0, Math.PI*2);
-    ctx.fill();
+    ctx.globalAlpha=s.a; ctx.fillStyle='#fff';
+    ctx.beginPath(); ctx.arc(s.x,s.y,s.r,0,Math.PI*2); ctx.fill();
   }
-  ctx.globalAlpha = 1;
+  ctx.globalAlpha=1;
 
-  // Touch pull indicator
-  if (touch && holdTime > 0.05) {
-    const str = Math.min(holdTime / 0.5, 1);
-    const rings = 3;
-    for (let i = 0; i < rings; i++) {
-      const progress = ((Date.now() / 600 + i/rings) % 1);
-      const rr = 20 + progress * 60;
-      ctx.beginPath();
-      ctx.arc(touch.x, touch.y, rr, 0, Math.PI*2);
-      ctx.strokeStyle = `rgba(255,255,255,${str * 0.25 * (1 - progress)})`;
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-    }
-  }
-
-  // Capture zone ring — pulses when a moon is inside it
-  const moonInZone = moons.some(m => !m.orbiting && Math.hypot(m.x-cx, m.y-cy) < CAPTURE_RADIUS);
-  ctx.beginPath();
-  ctx.arc(cx, cy, CAPTURE_RADIUS, 0, Math.PI*2);
+  // Capture zone ring
+  const moonInZone = moons.some(m=>!m.orbiting && Math.hypot(m.x-cx,m.y-cy)<CAPTURE_R);
+  ctx.beginPath(); ctx.arc(cx,cy,CAPTURE_R,0,Math.PI*2);
+  ctx.setLineDash([5,9]);
   ctx.strokeStyle = moonInZone
-    ? `rgba(255,255,255,${0.12 + 0.08 * Math.sin(Date.now() / 200)})`
-    : 'rgba(255,255,255,0.04)';
-  ctx.lineWidth = moonInZone ? 2 : 1;
-  ctx.setLineDash([6, 8]);
+    ? `rgba(255,255,255,${0.14+0.07*Math.sin(Date.now()/180)})`
+    : 'rgba(255,255,255,0.05)';
+  ctx.lineWidth = moonInZone ? 1.5 : 1;
   ctx.stroke();
   ctx.setLineDash([]);
+
+  // Touch pull rings (animate outward from finger)
+  if (touch) {
+    for (let i=0; i<3; i++) {
+      const t = ((Date.now()/500 + i/3) % 1);
+      ctx.beginPath(); ctx.arc(touch.x,touch.y,10+t*50,0,Math.PI*2);
+      ctx.strokeStyle=`rgba(255,255,255,${0.18*(1-t)})`;
+      ctx.lineWidth=1.2; ctx.stroke();
+    }
+  }
 
   // Orbit rings for locked moons
   for (const m of moons) {
     if (!m.orbiting) continue;
-    ctx.beginPath();
-    ctx.arc(cx, cy, m.orbitR, 0, Math.PI*2);
-    ctx.strokeStyle = m.color + '22';
-    ctx.lineWidth = 1;
-    ctx.stroke();
+    ctx.beginPath(); ctx.arc(cx,cy,m.orbitR,0,Math.PI*2);
+    ctx.strokeStyle=m.color+'1e'; ctx.lineWidth=1; ctx.stroke();
   }
 
   // Planet
-  const pg = ctx.createRadialGradient(cx-6, cy-6, 2, cx, cy, PLANET_R);
-  pg.addColorStop(0, '#d0eeff');
-  pg.addColorStop(0.5, '#5ba8d4');
-  pg.addColorStop(1, '#1a4a7a');
-  ctx.beginPath();
-  ctx.arc(cx, cy, PLANET_R, 0, Math.PI*2);
-  ctx.fillStyle = pg;
-  ctx.fill();
-
-  // Planet glow
-  ctx.beginPath();
-  ctx.arc(cx, cy, PLANET_R + 10, 0, Math.PI*2);
-  ctx.strokeStyle = 'rgba(100,180,255,0.15)';
-  ctx.lineWidth = 6;
-  ctx.stroke();
+  const pg=ctx.createRadialGradient(cx-5,cy-5,2,cx,cy,PLANET_R);
+  pg.addColorStop(0,'#cde8ff'); pg.addColorStop(0.5,'#4a90d4'); pg.addColorStop(1,'#1a3a6a');
+  ctx.beginPath(); ctx.arc(cx,cy,PLANET_R,0,Math.PI*2);
+  ctx.fillStyle=pg; ctx.fill();
+  // glow
+  ctx.beginPath(); ctx.arc(cx,cy,PLANET_R+9,0,Math.PI*2);
+  ctx.strokeStyle='rgba(100,180,255,0.12)'; ctx.lineWidth=7; ctx.stroke();
 
   // Moons
   for (const m of moons) {
-    const inZone = !m.orbiting && Math.hypot(m.x-cx, m.y-cy) < CAPTURE_RADIUS;
+    const inZone = !m.orbiting && Math.hypot(m.x-cx,m.y-cy)<CAPTURE_R;
 
+    // Pulse halo when in capture zone
     if (inZone) {
-      // Pulse glow: release now!
-      const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 150);
-      ctx.beginPath();
-      ctx.arc(m.x, m.y, m.r + 8 + pulse * 4, 0, Math.PI*2);
-      ctx.strokeStyle = m.color + '55';
-      ctx.lineWidth = 3;
-      ctx.stroke();
+      const p=0.5+0.5*Math.sin(Date.now()/140);
+      ctx.beginPath(); ctx.arc(m.x,m.y,m.r+6+p*4,0,Math.PI*2);
+      ctx.strokeStyle=m.color+'60'; ctx.lineWidth=2.5; ctx.stroke();
     }
 
-    ctx.beginPath();
-    ctx.arc(m.x, m.y, m.r, 0, Math.PI*2);
-    ctx.fillStyle = m.color;
-    ctx.fill();
+    ctx.beginPath(); ctx.arc(m.x,m.y,m.r,0,Math.PI*2);
+    ctx.fillStyle=m.color; ctx.fill();
 
     if (m.orbiting) {
-      ctx.beginPath();
-      ctx.arc(m.x, m.y, m.r + 5, 0, Math.PI*2);
-      ctx.strokeStyle = m.color + '44';
-      ctx.lineWidth = 3;
-      ctx.stroke();
+      ctx.beginPath(); ctx.arc(m.x,m.y,m.r+4,0,Math.PI*2);
+      ctx.strokeStyle=m.color+'50'; ctx.lineWidth=2.5; ctx.stroke();
     }
   }
 
   // Particles
   for (const p of particles) {
-    ctx.globalAlpha = p.life * p.life;
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, p.r, 0, Math.PI*2);
-    ctx.fillStyle = p.color;
-    ctx.fill();
+    ctx.globalAlpha=p.life*p.life;
+    ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,Math.PI*2);
+    ctx.fillStyle=p.color; ctx.fill();
   }
-  ctx.globalAlpha = 1;
+  ctx.globalAlpha=1;
 }
 
-// Kick off
-setTimeout(() => spawnMoon(), 800);
-setTimeout(() => spawnMoon(), 2500);
-requestAnimationFrame(loop);
+// ─── Boot ────────────────────────────────────────────────────────
+setTimeout(()=>moons.push(mkMoon()), 700);
+setTimeout(()=>moons.push(mkMoon()), 2600);
+requestAnimationFrame(frame);
 </script>
 </body>
 </html>
