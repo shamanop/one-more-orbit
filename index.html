@@ -14,6 +14,11 @@
     text-align: center; color: #fff; font-size: 52px; font-weight: 200;
     letter-spacing: 4px; pointer-events: none;
   }
+  #rate {
+    position: fixed; top: 90px; left: 0; right: 0;
+    text-align: center; color: rgba(255,255,255,0.35); font-size: 16px; font-weight: 300;
+    letter-spacing: 3px; pointer-events: none;
+  }
 
   #death {
     display: none; position: fixed; inset: 0;
@@ -30,6 +35,7 @@
 <body>
 <canvas id="c"></canvas>
 <div id="score">0</div>
+<div id="rate"></div>
 <div id="death">
   <h1>collapse</h1>
   <div class="pts" id="final"></div>
@@ -145,6 +151,7 @@ function die() {
 function restart() {
   moons=[]; particles=[]; flashes=[]; score=0; dead=false; spawnTimer=0; uid=0;
   document.getElementById('score').textContent='0';
+  document.getElementById('rate').textContent='';
   document.getElementById('death').classList.remove('show');
   // stagger first two moons
   setTimeout(()=>{ if(!dead) moons.push(mkMoon()); }, 600);
@@ -216,6 +223,9 @@ function frame(ts) {
       m.orbitAngle += w * m.orbitDir * dt;
       m.x = cx + Math.cos(m.orbitAngle)*m.orbitR;
       m.y = cy + Math.sin(m.orbitAngle)*m.orbitR;
+      // Passive income: +1 pt/sec per orbiting moon
+      score += dt;
+      document.getElementById('score').textContent = Math.floor(score);
       continue;
     }
 
@@ -271,6 +281,10 @@ function frame(ts) {
   }
 
   moons = moons.filter(m=>!remove.has(m.id));
+
+  // Update rate display
+  const orbitCount = moons.filter(m=>m.orbiting).length;
+  document.getElementById('rate').textContent = orbitCount > 0 ? `+${orbitCount}/sec` : '';
 
   // Particles
   for (const p of particles) {
