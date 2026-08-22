@@ -53,6 +53,7 @@ const CAPTURE_R     = 200;     // BIG capture zone — liberal
 const MAX_CAP_SPEED = 9999;    // no speed limit — if you're in the zone, you lock
 const MAX_MOONS     = 5;
 const SPAWN_MS      = 5000;
+const ORBIT_SPEED   = 3.5;    // captured moons orbit 3.5x faster than bare physics (visual only)
 
 // ─── Audio ───────────────────────────────────────────────────────
 let ac;
@@ -211,7 +212,7 @@ function frame(ts) {
   for (const m of moons) {
     if (m.orbiting) {
       // Advance along perfect circle
-      const w = Math.sqrt(GM/m.orbitR)/m.orbitR; // angular velocity
+      const w = Math.sqrt(GM/m.orbitR)/m.orbitR * ORBIT_SPEED;
       m.orbitAngle += w * m.orbitDir * dt;
       m.x = cx + Math.cos(m.orbitAngle)*m.orbitR;
       m.y = cy + Math.sin(m.orbitAngle)*m.orbitR;
@@ -237,11 +238,7 @@ function frame(ts) {
       m.vy += (fy/fd)*f*dt;
     }
 
-    // Soft damping inside capture zone — slows moons naturally, makes capture feel earned
-    if (dist < CAPTURE_R) {
-      m.vx *= 0.985;
-      m.vy *= 0.985;
-    }
+
 
     m.x += m.vx*dt;
     m.y += m.vy*dt;
