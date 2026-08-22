@@ -48,11 +48,11 @@ window.addEventListener('resize', resize);
 // ─── Constants ───────────────────────────────────────────────────
 const PLANET_R      = 22;
 const GM            = 14000;   // planet gravity strength
-const PULL_STR      = 500;     // finger pull acceleration (pixels/s² at 1px distance — falls off with dist)
-const CAPTURE_R     = 150;     // radius within which release locks orbit
-const MAX_CAP_SPEED = 160;     // max speed allowed for capture (generous)
-const MAX_MOONS     = 5;       // cap on screen at once
-const SPAWN_MS      = 5000;    // ms between spawns
+const PULL_STR      = 500;     // finger pull acceleration
+const CAPTURE_R     = 200;     // BIG capture zone — liberal
+const MAX_CAP_SPEED = 9999;    // no speed limit — if you're in the zone, you lock
+const MAX_MOONS     = 5;
+const SPAWN_MS      = 5000;
 
 // ─── Audio ───────────────────────────────────────────────────────
 let ac;
@@ -108,7 +108,7 @@ function mkStars() {
 mkStars();
 
 // ─── Game state ──────────────────────────────────────────────────
-let moons = [], particles = [], score = 0, dead = false, uid = 0;
+let moons = [], particles = [], flashes = [], score = 0, dead = false, uid = 0;
 let touch = null, spawnTimer = 0;
 
 function mkMoon() {
@@ -142,7 +142,7 @@ function die() {
 }
 
 function restart() {
-  moons=[]; particles=[]; score=0; dead=false; spawnTimer=0; uid=0;
+  moons=[]; particles=[]; flashes=[]; score=0; dead=false; spawnTimer=0; uid=0;
   document.getElementById('score').textContent='0';
   document.getElementById('death').classList.remove('show');
   // stagger first two moons
@@ -172,6 +172,8 @@ function tryCapture() {
       document.getElementById('score').textContent = score;
       beep(m.freq);
       startHum(m.id, m.freq);
+      // capture flash
+      flashes.push({ x: m.x, y: m.y, r: m.r+4, color: m.color, life: 1 });
       any = true;
     }
   }
@@ -235,6 +237,12 @@ function frame(ts) {
       m.vy += (fy/fd)*f*dt;
     }
 
+    // Soft damping inside capture zone — slows moons naturally, makes capture feel earned
+    if (dist < CAPTURE_R) {
+      m.vx *= 0.985;
+      m.vy *= 0.985;
+    }
+
     m.x += m.vx*dt;
     m.y += m.vy*dt;
 
@@ -264,6 +272,10 @@ function frame(ts) {
     p.x+=p.vx*dt; p.y+=p.vy*dt; p.vx*=0.92; p.vy*=0.92; p.life-=p.d;
   }
   particles = particles.filter(p=>p.life>0);
+
+  // Capture flashes — expand ring + fade
+  for (const f of flashes) { f.r += 120*dt; f.life -= 3*dt; }
+  flashes = flashes.filter(f=>f.life>0);
 
   draw();
   requestAnimationFrame(frame);
@@ -337,6 +349,14 @@ function draw() {
       ctx.strokeStyle=m.color+'50'; ctx.lineWidth=2.5; ctx.stroke();
     }
   }
+
+  // Capture flash rings
+  for (const f of flashes) {
+    ctx.globalAlpha = f.life * f.life;
+    ctx.beginPath(); ctx.arc(f.x, f.y, f.r, 0, Math.PI*2);
+    ctx.strokeStyle = f.color; ctx.lineWidth = 3; ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
 
   // Particles
   for (const p of particles) {
