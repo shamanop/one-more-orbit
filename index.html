@@ -48,7 +48,7 @@ window.addEventListener('resize', resize);
 // ─── Constants ───────────────────────────────────────────────────
 const PLANET_R      = 22;
 const GM            = 14000;   // planet gravity strength
-const PULL_STR      = 4500;    // finger pull acceleration
+const PULL_STR      = 9000;    // finger pull acceleration
 const CAPTURE_R     = 110;     // tighter capture zone — must guide moon close
 const MAX_CAP_SPEED = 9999;    // no speed limit — if you're in the zone, you lock
 const MAX_MOONS     = 5;
@@ -116,7 +116,7 @@ function mkMoon() {
   const edge = Math.floor(Math.random()*4);
   const ci   = Math.floor(Math.random()*COLORS.length);
   const r    = 9 + Math.random()*12;
-  const spd  = 28 + Math.random()*38;
+  const spd  = 18 + Math.random()*22;
   const nudge = () => (Math.random()-0.5)*18;
   let x, y, vx, vy;
   if      (edge===0) { x=Math.random()*W; y=-r;   vx=(cx-x)*0.06+nudge(); vy=spd;  }
