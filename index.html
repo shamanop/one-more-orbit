@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>One More Orbit</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #000; overflow: hidden; touch-action: none; }
+  canvas { display: block; }
+  #ui {
+    position: fixed; top: 24px; left: 0; right: 0;
+    text-align: center; pointer-events: none;
+    font-family: -apple-system, sans-serif; color: #fff;
+  }
+  #score { font-size: 36px; font-weight: 300; letter-spacing: 2px; }
+  #moons { font-size: 13px; opacity: 0.5; margin-top: 6px; letter-spacing: 1px; text-transform: uppercase; }
+  #hint {
+    position: fixed; bottom: 40px; left: 0; right: 0;
+    text-align: center; pointer-events: none;
+    font-family: -apple-system, sans-serif;
+    font-size: 13px; color: rgba(255,255,255,0.35);
+    letter-spacing: 1px;
+  }
+  #overlay {
+    display: none; position: fixed; inset: 0;
+    background: rgba(0,0,0,0.85);
+    font-family: -apple-system, sans-serif; color: #fff;
+    flex-direction: column; align-items: center; justify-content: center; gap: 16px;
+  }
+  #overlay.show { display: flex; }
+  #overlay h1 { font-size: 52px; font-weight: 200; letter-spacing: 4px; }
+  #overlay .sub { font-size: 14px; opacity: 0.5; letter-spacing: 2px; text-transform: uppercase; }
+  #overlay .final { font-size: 28px; font-weight: 300; margin: 8px 0; }
+  #restart {
+    margin-top: 12px; padding: 12px 40px; font-size: 16px;
+    background: transparent; color: #fff; border: 1px solid rgba(255,255,255,0.4);
+    border-radius: 40px; cursor: pointer; letter-spacing: 2px;
+    transition: background 0.2s;
+  }
+  #restart:hover { background: rgba(255,255,255,0.1); }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">
+  <div id="score">0</div>
+  <div id="moons">0 moons in orbit</div>
+</div>
+<div id="hint">hold anywhere to pull · release to orbit</div>
+<div id="overlay">
+  <h1>collapse</h1>
+  <div class="sub">your system fell apart</div>
+  <div class="final" id="final-score"></div>
+  <button id="restart">one more orbit</button>
+</div>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+let W, H, cx, cy;
+function resize() {
+  W = canvas.width = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+  cx = W / 2; cy = H / 2;
+}
+resize();
+window.addEventListener('resize', resize);
+
+// Physics
+const PLANET_R = 22;
+const GM = 18000;
+const TOUCH_FORCE = 2800;
+const ORBIT_SPEED_THRESH = 0.20; // 20% of circular velocity
+const ORBIT_ANGLE_THRESH = 0.38; // ~22 degrees, dot product of radial vs velocity
+
+// Colors (pentatonic palette)
+const COLORS = ['#7ecef4','#f4c06f','#f47e7e','#a8f47e','#d07ef4','#f4a87e','#7ef4d0'];
+const FREQS  = [261.63, 293.66, 329.63, 392.00, 440.00, 523.25, 587.33]; // C major pentatonic
+
+// Audio
+let audioCtx;
+function getAudio() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  return audioCtx;
+}
+
+const orbitNodes = new Map(); // moonId -> { osc, gain }
+
+function playClick(freq) {
+  const ac = getAudio();
+  const osc = ac.createOscillator();
+  const g = ac.createGain();
+  osc.connect(g); g.connect(ac.destination);
+  osc.frequency.value = freq;
+  osc.type = 'sine';
+  g.gain.setValueAtTime(0.4, ac.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.6);
+  osc.start(); osc.stop(ac.currentTime + 0.6);
+}
+
+function playBoom() {
+  const ac = getAudio();
+  const buf = ac.createBuffer(1, ac.sampleRate * 0.4, ac.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < data.length; i++) data[i] = (Math.random()*2-1) * Math.pow(1 - i/data.length, 3);
+  const src = ac.createBufferSource();
+  const g = ac.createGain();
+  src.buffer = buf; src.connect(g); g.connect(ac.destination);
+  g.gain.value = 0.3;
+  src.start();
+}
+
+function startOrbitHum(id, freq) {
+  const ac = getAudio();
+  const osc = ac.createOscillator();
+  const g = ac.createGain();
+  osc.connect(g); g.connect(ac.destination);
+  osc.frequency.value = freq;
+  osc.type = 'sine';
+  g.gain.value = 0.06;
+  osc.start();
+  orbitNodes.set(id, { osc, g });
+}
+
+function stopOrbitHum(id) {
+  const node = orbitNodes.get(id);
+  if (!node) return;
+  const ac = getAudio();
+  node.g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.4);
+  node.osc.stop(ac.currentTime + 0.4);
+  orbitNodes.delete(id);
+}
+
+function stopAllHums() {
+  for (const id of orbitNodes.keys()) stopOrbitHum(id);
+}
+
+// Stars
+let stars = [];
+function initStars() {
+  stars = Array.from({length: 120}, () => ({
+    x: Math.random() * W, y: Math.random() * H,
+    r: Math.random() * 1.2 + 0.2,
+    a: Math.random() * 0.6 + 0.1
+  }));
+}
+initStars();
+
+// Game state
+let moons = [], particles = [];
+let score = 0, dead = false;
+let touch = null, holdTime = 0;
+let spawnTimer = 0;
+let spawnInterval = 4500;
+let moonId = 0;
+
+function spawnMoon() {
+  const edge = Math.floor(Math.random() * 4);
+  const ci = Math.floor(Math.random() * COLORS.length);
+  const r = 9 + Math.random() * 13;
+  let x, y, vx, vy;
+  const spd = 35 + Math.random() * 55;
+  const drift = () => (Math.random() - 0.5) * 30;
+
+  if (edge === 0) { x = Math.random()*W; y = -r;   vx = (cx-x)*0.08+drift(); vy = spd; }
+  else if (edge === 1) { x = W+r; y = Math.random()*H; vx = -spd; vy = (cy-y)*0.08+drift(); }
+  else if (edge === 2) { x = Math.random()*W; y = H+r; vx = (cx-x)*0.08+drift(); vy = -spd; }
+  else  { x = -r; y = Math.random()*H; vx = spd; vy = (cy-y)*0.08+drift(); }
+
+  moons.push({ id: moonId++, x, y, vx, vy, r, color: COLORS[ci], freq: FREQS[ci % FREQS.length],
+    orbiting: false, orbitR: 0, orbitAngle: 0, orbitDir: 1 });
+}
+
+function explode(x, y, color, n = 18) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const spd = 40 + Math.random() * 130;
+    particles.push({ x, y, vx: Math.cos(a)*spd, vy: Math.sin(a)*spd,
+      r: 1.5 + Math.random()*3.5, color, life: 1, decay: 0.018 + Math.random()*0.025 });
+  }
+}
+
+function endGame() {
+  dead = true;
+  stopAllHums();
+  document.getElementById('final-score').textContent = `${score} points`;
+  document.getElementById('overlay').classList.add('show');
+}
+
+function updateUI() {
+  const n = moons.filter(m => m.orbiting).length;
+  document.getElementById('score').textContent = score;
+  document.getElementById('moons').textContent = `${n} moon${n !== 1 ? 's' : ''} in orbit`;
+}
+
+// Input
+function onDown(e) {
+  getAudio(); // unlock audio context on first interaction
+  const pt = e.touches ? e.touches[0] : e;
+  touch = { x: pt.clientX, y: pt.clientY };
+  holdTime = 0;
+}
+function onMove(e) {
+  if (!touch) return;
+  const pt = e.touches ? e.touches[0] : e;
+  touch = { x: pt.clientX, y: pt.clientY };
+}
+function onUp() { touch = null; holdTime = 0; }
+
+canvas.addEventListener('mousedown', onDown);
+canvas.addEventListener('mousemove', onMove);
+canvas.addEventListener('mouseup', onUp);
+canvas.addEventListener('touchstart', e => { e.preventDefault(); onDown(e); }, {passive:false});
+canvas.addEventListener('touchmove', e => { e.preventDefault(); onMove(e); }, {passive:false});
+canvas.addEventListener('touchend', e => { e.preventDefault(); onUp(); }, {passive:false});
+
+document.getElementById('restart').addEventListener('click', () => {
+  moons = []; particles = []; score = 0; dead = false;
+  spawnTimer = 0; spawnInterval = 4500; moonId = 0;
+  document.getElementById('overlay').classList.remove('show');
+  document.getElementById('hint').style.opacity = '1';
+  updateUI();
+  setTimeout(() => spawnMoon(), 600);
+  setTimeout(() => spawnMoon(), 2200);
+  requestAnimationFrame(loop);
+});
+
+let last = 0;
+
+function loop(ts) {
+  if (dead) return;
+  const dt = Math.min((ts - last) / 1000, 0.05);
+  last = ts;
+
+  if (touch) holdTime += dt;
+  const pullStr = touch ? Math.min(holdTime / 0.5, 1) * TOUCH_FORCE : 0;
+
+  // Spawn
+  spawnTimer += dt * 1000;
+  if (spawnTimer > spawnInterval) {
+    spawnMoon();
+    spawnTimer = 0;
+    spawnInterval = Math.max(2000, spawnInterval - 80); // accelerate slightly
+  }
+
+  const remove = new Set();
+
+  for (const m of moons) {
+    if (m.orbiting) {
+      // Perfect circle
+      const orbitSpd = Math.sqrt(GM / m.orbitR) / m.orbitR;
+      m.orbitAngle += orbitSpd * m.orbitDir * dt;
+      m.x = cx + Math.cos(m.orbitAngle) * m.orbitR;
+      m.y = cy + Math.sin(m.orbitAngle) * m.orbitR;
+      continue;
+    }
+
+    // Planet gravity
+    const dx = cx - m.x, dy = cy - m.y;
+    const dist = Math.sqrt(dx*dx + dy*dy);
+
+    // Hit planet
+    if (dist < PLANET_R + m.r) {
+      explode(m.x, m.y, m.color, 35);
+      playBoom();
+      endGame();
+      return;
+    }
+
+    const grav = GM / (dist * dist);
+    m.vx += (dx/dist) * grav * dt;
+    m.vy += (dy/dist) * grav * dt;
+
+    // Touch pull
+    if (touch && pullStr > 0) {
+      const tx = touch.x - m.x, ty = touch.y - m.y;
+      const td = Math.sqrt(tx*tx + ty*ty) + 80;
+      const tf = pullStr / (td * td) * 6000;
+      m.vx += (tx / Math.sqrt(tx*tx+ty*ty)) * tf * dt;
+      m.vy += (ty / Math.sqrt(tx*tx+ty*ty)) * tf * dt;
+    }
+
+    // Orbit lock check
+    const spd = Math.sqrt(m.vx*m.vx + m.vy*m.vy);
+    const vCirc = Math.sqrt(GM / dist);
+    if (Math.abs(spd - vCirc) / vCirc < ORBIT_SPEED_THRESH) {
+      // Check tangentiality: dot(radial_unit, velocity_unit) should be near 0
+      const rx = dx/dist, ry = dy/dist; // points toward planet
+      const radialDot = Math.abs((m.vx * (-rx) + m.vy * (-ry)) / spd); // 0 = tangential, 1 = radial
+      if (radialDot < ORBIT_ANGLE_THRESH) {
+        // Lock! Determine direction from cross product
+        const crossZ = (-rx) * m.vy - (-ry) * m.vx; // positive = CCW
+        m.orbiting = true;
+        m.orbitR = dist;
+        m.orbitAngle = Math.atan2(m.y - cy, m.x - cx);
+        m.orbitDir = crossZ > 0 ? 1 : -1;
+        m.vx = 0; m.vy = 0;
+
+        const n = moons.filter(o => o.orbiting).length + 1;
+        score += Math.round((vCirc + dist * 0.1) * n * 0.5);
+        playClick(m.freq);
+        startOrbitHum(m.id, m.freq);
+        updateUI();
+
+        // Fade out hint after first orbit
+        document.getElementById('hint').style.opacity = '0';
+        continue;
+      }
+    }
+
+    m.x += m.vx * dt;
+    m.y += m.vy * dt;
+
+    // Flew off screen
+    if (m.x < -300 || m.x > W+300 || m.y < -300 || m.y > H+300) remove.add(m.id);
+  }
+
+  // Moon-moon collisions
+  for (let i = 0; i < moons.length; i++) {
+    if (remove.has(moons[i].id)) continue;
+    for (let j = i+1; j < moons.length; j++) {
+      if (remove.has(moons[j].id)) continue;
+      const a = moons[i], b = moons[j];
+      const dx = a.x - b.x, dy = a.y - b.y;
+      if (dx*dx + dy*dy < (a.r+b.r)*(a.r+b.r)) {
+        explode((a.x+b.x)/2, (a.y+b.y)/2, a.color, 14);
+        explode((a.x+b.x)/2, (a.y+b.y)/2, b.color, 14);
+        playBoom();
+        if (a.orbiting) { score = Math.max(0, score - 80); stopOrbitHum(a.id); }
+        if (b.orbiting) { score = Math.max(0, score - 80); stopOrbitHum(b.id); }
+        remove.add(a.id); remove.add(b.id);
+        updateUI();
+      }
+    }
+  }
+
+  moons = moons.filter(m => !remove.has(m.id));
+
+  // Particles
+  for (const p of particles) {
+    p.x += p.vx * dt; p.y += p.vy * dt;
+    p.vx *= 0.92; p.vy *= 0.92;
+    p.life -= p.decay;
+  }
+  particles = particles.filter(p => p.life > 0);
+
+  draw();
+  requestAnimationFrame(loop);
+}
+
+function draw() {
+  // Background
+  ctx.fillStyle = '#04040f';
+  ctx.fillRect(0, 0, W, H);
+
+  // Stars
+  for (const s of stars) {
+    ctx.globalAlpha = s.a;
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.r, 0, Math.PI*2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // Touch pull indicator
+  if (touch && holdTime > 0.05) {
+    const str = Math.min(holdTime / 0.5, 1);
+    const rings = 3;
+    for (let i = 0; i < rings; i++) {
+      const progress = ((Date.now() / 600 + i/rings) % 1);
+      const rr = 20 + progress * 60;
+      ctx.beginPath();
+      ctx.arc(touch.x, touch.y, rr, 0, Math.PI*2);
+      ctx.strokeStyle = `rgba(255,255,255,${str * 0.25 * (1 - progress)})`;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+  }
+
+  // Orbit rings
+  for (const m of moons) {
+    if (!m.orbiting) continue;
+    ctx.beginPath();
+    ctx.arc(cx, cy, m.orbitR, 0, Math.PI*2);
+    ctx.strokeStyle = m.color + '1a';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+
+  // Planet
+  const pg = ctx.createRadialGradient(cx-6, cy-6, 2, cx, cy, PLANET_R);
+  pg.addColorStop(0, '#d0eeff');
+  pg.addColorStop(0.5, '#5ba8d4');
+  pg.addColorStop(1, '#1a4a7a');
+  ctx.beginPath();
+  ctx.arc(cx, cy, PLANET_R, 0, Math.PI*2);
+  ctx.fillStyle = pg;
+  ctx.fill();
+
+  // Planet glow
+  ctx.beginPath();
+  ctx.arc(cx, cy, PLANET_R + 10, 0, Math.PI*2);
+  ctx.strokeStyle = 'rgba(100,180,255,0.15)';
+  ctx.lineWidth = 6;
+  ctx.stroke();
+
+  // Moons
+  for (const m of moons) {
+    ctx.beginPath();
+    ctx.arc(m.x, m.y, m.r, 0, Math.PI*2);
+    ctx.fillStyle = m.color;
+    ctx.fill();
+
+    if (m.orbiting) {
+      // Soft glow
+      ctx.beginPath();
+      ctx.arc(m.x, m.y, m.r + 5, 0, Math.PI*2);
+      ctx.strokeStyle = m.color + '44';
+      ctx.lineWidth = 3;
+      ctx.stroke();
+    }
+  }
+
+  // Particles
+  for (const p of particles) {
+    ctx.globalAlpha = p.life * p.life;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r, 0, Math.PI*2);
+    ctx.fillStyle = p.color;
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+// Kick off
+setTimeout(() => spawnMoon(), 800);
+setTimeout(() => spawnMoon(), 2500);
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
