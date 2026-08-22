@@ -48,7 +48,7 @@ window.addEventListener('resize', resize);
 // ─── Constants ───────────────────────────────────────────────────
 const PLANET_R      = 22;
 const GM            = 14000;   // planet gravity strength
-const PULL_STR      = 500;     // finger pull acceleration
+const PULL_STR      = 2200;    // finger pull acceleration
 const CAPTURE_R     = 200;     // BIG capture zone — liberal
 const MAX_CAP_SPEED = 9999;    // no speed limit — if you're in the zone, you lock
 const MAX_MOONS     = 5;
@@ -304,11 +304,14 @@ function draw() {
   // Touch pull rings (animate outward from finger)
   if (touch) {
     for (let i=0; i<3; i++) {
-      const t = ((Date.now()/500 + i/3) % 1);
-      ctx.beginPath(); ctx.arc(touch.x,touch.y,10+t*50,0,Math.PI*2);
-      ctx.strokeStyle=`rgba(255,255,255,${0.18*(1-t)})`;
-      ctx.lineWidth=1.2; ctx.stroke();
+      const t = ((Date.now()/400 + i/3) % 1);
+      ctx.beginPath(); ctx.arc(touch.x,touch.y,8+t*70,0,Math.PI*2);
+      ctx.strokeStyle=`rgba(255,255,255,${0.35*(1-t)})`;
+      ctx.lineWidth=1.8; ctx.stroke();
     }
+    // dot at finger center
+    ctx.beginPath(); ctx.arc(touch.x,touch.y,4,0,Math.PI*2);
+    ctx.fillStyle='rgba(255,255,255,0.6)'; ctx.fill();
   }
 
   // Orbit rings for locked moons
