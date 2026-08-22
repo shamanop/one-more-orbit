@@ -247,17 +247,25 @@ function frame(ts) {
     if (m.x<-250||m.x>W+250||m.y<-250||m.y>H+250) remove.add(m.id);
   }
 
-  // Moon-moon collision → game over
+  // Moon-moon collision → both bounce off, no game over
   for (let i=0; i<moons.length; i++) {
-    if (remove.has(moons[i].id)) continue;
+    if (remove.has(moons[i].id) || moons[i].orbiting) continue;
     for (let j=i+1; j<moons.length; j++) {
-      if (remove.has(moons[j].id)) continue;
+      if (remove.has(moons[j].id) || moons[j].orbiting) continue;
       const a=moons[i], b=moons[j];
       const dx=a.x-b.x, dy=a.y-b.y;
-      if (dx*dx+dy*dy < (a.r+b.r)*(a.r+b.r)) {
-        burst((a.x+b.x)/2,(a.y+b.y)/2,a.color,16);
-        burst((a.x+b.x)/2,(a.y+b.y)/2,b.color,16);
-        boom(); die(); return;
+      const d2=dx*dx+dy*dy, minD=a.r+b.r;
+      if (d2 < minD*minD && d2 > 0) {
+        const d=Math.sqrt(d2), nx=dx/d, ny=dy/d;
+        const rel=( a.vx-b.vx)*nx+(a.vy-b.vy)*ny;
+        if (rel < 0) { // approaching
+          a.vx -= rel*nx; a.vy -= rel*ny;
+          b.vx += rel*nx; b.vy += rel*ny;
+        }
+        // push apart so they don't stick
+        const overlap=(minD-d)/2+0.5;
+        a.x+=nx*overlap; a.y+=ny*overlap;
+        b.x-=nx*overlap; b.y-=ny*overlap;
       }
     }
   }
