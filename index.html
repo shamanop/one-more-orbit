@@ -186,7 +186,7 @@ function pt(e) { return e.touches ? e.touches[0] : e; }
 canvas.addEventListener('mousedown',  e => { audio(); touch={x:pt(e).clientX,y:pt(e).clientY}; });
 canvas.addEventListener('mousemove',  e => { if(touch) touch={x:pt(e).clientX,y:pt(e).clientY}; });
 canvas.addEventListener('mouseup',    () => { tryCapture(); touch=null; });
-canvas.addEventListener('touchstart', e => { e.preventDefault(); audio(); touch={x:pt(e).clientX,y:pt(e).clientY}; }, {passive:false});
+canvas.addEventListener('touchstart', e => { e.preventDefault(); try{audio();}catch(err){} touch={x:pt(e).clientX,y:pt(e).clientY}; }, {passive:false});
 canvas.addEventListener('touchmove',  e => { e.preventDefault(); if(touch) touch={x:pt(e).clientX,y:pt(e).clientY}; }, {passive:false});
 canvas.addEventListener('touchend',   e => { e.preventDefault(); tryCapture(); touch=null; }, {passive:false});
 
@@ -365,6 +365,12 @@ function draw() {
     ctx.fillStyle=p.color; ctx.fill();
   }
   ctx.globalAlpha=1;
+
+  // DEBUG: show touch status
+  ctx.font = 'bold 18px monospace';
+  ctx.fillStyle = touch ? '#ff4444' : 'rgba(255,255,255,0.15)';
+  ctx.textAlign = 'center';
+  ctx.fillText(touch ? `TOUCH ${Math.round(touch.x)},${Math.round(touch.y)}` : 'no touch', cx, H-20);
 }
 
 // ─── Boot ────────────────────────────────────────────────────────
