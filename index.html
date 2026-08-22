@@ -72,8 +72,8 @@ window.addEventListener('resize', resize);
 const PLANET_R = 22;
 const GM = 22000;
 const TOUCH_FORCE = 3200;
-const ORBIT_SPEED_THRESH = 0.35; // 35% of circular velocity — wide capture zone
-const ORBIT_ANGLE_THRESH = 0.60; // ~37 degrees — more forgiving angle
+const CAPTURE_RADIUS = 160;  // ring where release locks moons into orbit
+const MIN_TANGENTIAL = 0.25; // min tangential fraction needed to lock (very forgiving)
 
 // Colors (pentatonic palette)
 const COLORS = ['#7ecef4','#f4c06f','#f47e7e','#a8f47e','#d07ef4','#f4a87e','#7ef4d0'];
@@ -207,7 +207,48 @@ function onMove(e) {
   const pt = e.touches ? e.touches[0] : e;
   touch = { x: pt.clientX, y: pt.clientY };
 }
-function onUp() { touch = null; holdTime = 0; }
+function snapToOrbit() {
+  // On release: snap any moon inside capture zone with tangential motion
+  let snapped = false;
+  for (const m of moons) {
+    if (m.orbiting) continue;
+    const dx = cx - m.x, dy = cy - m.y;
+    const dist = Math.sqrt(dx*dx + dy*dy);
+    if (dist > CAPTURE_RADIUS || dist < PLANET_R + m.r + 5) continue;
+
+    const spd = Math.sqrt(m.vx*m.vx + m.vy*m.vy);
+    if (spd < 0.5) continue;
+
+    // How tangential is the velocity? (0 = radial, 1 = tangential)
+    const rx = dx/dist, ry = dy/dist;
+    const radialComponent = Math.abs(m.vx * (-rx) + m.vy * (-ry)) / spd;
+    const tangentialFraction = 1 - radialComponent;
+
+    if (tangentialFraction > MIN_TANGENTIAL) {
+      // Determine orbit direction from cross product
+      const crossZ = (-rx) * m.vy - (-ry) * m.vx;
+      m.orbiting = true;
+      m.orbitR = dist;
+      m.orbitAngle = Math.atan2(m.y - cy, m.x - cx);
+      m.orbitDir = crossZ >= 0 ? 1 : -1;
+      m.vx = 0; m.vy = 0;
+
+      const n = moons.filter(o => o.orbiting).length;
+      score += Math.round(dist * n * 0.8 + 50);
+      playClick(m.freq);
+      startOrbitHum(m.id, m.freq);
+      document.getElementById('hint').style.opacity = '0';
+      snapped = true;
+    }
+  }
+  if (snapped) updateUI();
+}
+
+function onUp() {
+  if (touch && !dead) snapToOrbit();
+  touch = null;
+  holdTime = 0;
+}
 
 canvas.addEventListener('mousedown', onDown);
 canvas.addEventListener('mousemove', onMove);
@@ -282,34 +323,6 @@ function loop(ts) {
       m.vy += (ty / Math.sqrt(tx*tx+ty*ty)) * tf * dt;
     }
 
-    // Orbit lock check
-    const spd = Math.sqrt(m.vx*m.vx + m.vy*m.vy);
-    const vCirc = Math.sqrt(GM / dist);
-    if (Math.abs(spd - vCirc) / vCirc < ORBIT_SPEED_THRESH) {
-      // Check tangentiality: dot(radial_unit, velocity_unit) should be near 0
-      const rx = dx/dist, ry = dy/dist; // points toward planet
-      const radialDot = Math.abs((m.vx * (-rx) + m.vy * (-ry)) / spd); // 0 = tangential, 1 = radial
-      if (radialDot < ORBIT_ANGLE_THRESH) {
-        // Lock! Determine direction from cross product
-        const crossZ = (-rx) * m.vy - (-ry) * m.vx; // positive = CCW
-        m.orbiting = true;
-        m.orbitR = dist;
-        m.orbitAngle = Math.atan2(m.y - cy, m.x - cx);
-        m.orbitDir = crossZ > 0 ? 1 : -1;
-        m.vx = 0; m.vy = 0;
-
-        const n = moons.filter(o => o.orbiting).length + 1;
-        score += Math.round((vCirc + dist * 0.1) * n * 0.5);
-        playClick(m.freq);
-        startOrbitHum(m.id, m.freq);
-        updateUI();
-
-        // Fade out hint after first orbit
-        document.getElementById('hint').style.opacity = '0';
-        continue;
-      }
-    }
-
     m.x += m.vx * dt;
     m.y += m.vy * dt;
 
@@ -380,13 +393,17 @@ function draw() {
     }
   }
 
-  // Sweet spot capture zone ring (where moons naturally want to orbit)
-  const sweetR = Math.sqrt(GM / 55); // radius where circular speed ≈ 55 px/s
+  // Capture zone ring — pulses when a moon is inside it
+  const moonInZone = moons.some(m => !m.orbiting && Math.hypot(m.x-cx, m.y-cy) < CAPTURE_RADIUS);
   ctx.beginPath();
-  ctx.arc(cx, cy, sweetR, 0, Math.PI*2);
-  ctx.strokeStyle = 'rgba(255,255,255,0.04)';
-  ctx.lineWidth = sweetR * 0.6;
+  ctx.arc(cx, cy, CAPTURE_RADIUS, 0, Math.PI*2);
+  ctx.strokeStyle = moonInZone
+    ? `rgba(255,255,255,${0.12 + 0.08 * Math.sin(Date.now() / 200)})`
+    : 'rgba(255,255,255,0.04)';
+  ctx.lineWidth = moonInZone ? 2 : 1;
+  ctx.setLineDash([6, 8]);
   ctx.stroke();
+  ctx.setLineDash([]);
 
   // Orbit rings for locked moons
   for (const m of moons) {
@@ -417,13 +434,24 @@ function draw() {
 
   // Moons
   for (const m of moons) {
+    const inZone = !m.orbiting && Math.hypot(m.x-cx, m.y-cy) < CAPTURE_RADIUS;
+
+    if (inZone) {
+      // Pulse glow: release now!
+      const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 150);
+      ctx.beginPath();
+      ctx.arc(m.x, m.y, m.r + 8 + pulse * 4, 0, Math.PI*2);
+      ctx.strokeStyle = m.color + '55';
+      ctx.lineWidth = 3;
+      ctx.stroke();
+    }
+
     ctx.beginPath();
     ctx.arc(m.x, m.y, m.r, 0, Math.PI*2);
     ctx.fillStyle = m.color;
     ctx.fill();
 
     if (m.orbiting) {
-      // Soft glow
       ctx.beginPath();
       ctx.arc(m.x, m.y, m.r + 5, 0, Math.PI*2);
       ctx.strokeStyle = m.color + '44';
