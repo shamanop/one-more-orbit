@@ -70,10 +70,10 @@ window.addEventListener('resize', resize);
 
 // Physics
 const PLANET_R = 22;
-const GM = 18000;
-const TOUCH_FORCE = 2800;
-const ORBIT_SPEED_THRESH = 0.20; // 20% of circular velocity
-const ORBIT_ANGLE_THRESH = 0.38; // ~22 degrees, dot product of radial vs velocity
+const GM = 22000;
+const TOUCH_FORCE = 3200;
+const ORBIT_SPEED_THRESH = 0.35; // 35% of circular velocity — wide capture zone
+const ORBIT_ANGLE_THRESH = 0.60; // ~37 degrees — more forgiving angle
 
 // Colors (pentatonic palette)
 const COLORS = ['#7ecef4','#f4c06f','#f47e7e','#a8f47e','#d07ef4','#f4a87e','#7ef4d0'];
@@ -161,7 +161,7 @@ function spawnMoon() {
   const ci = Math.floor(Math.random() * COLORS.length);
   const r = 9 + Math.random() * 13;
   let x, y, vx, vy;
-  const spd = 35 + Math.random() * 55;
+  const spd = 22 + Math.random() * 35;
   const drift = () => (Math.random() - 0.5) * 30;
 
   if (edge === 0) { x = Math.random()*W; y = -r;   vx = (cx-x)*0.08+drift(); vy = spd; }
@@ -380,12 +380,20 @@ function draw() {
     }
   }
 
-  // Orbit rings
+  // Sweet spot capture zone ring (where moons naturally want to orbit)
+  const sweetR = Math.sqrt(GM / 55); // radius where circular speed ≈ 55 px/s
+  ctx.beginPath();
+  ctx.arc(cx, cy, sweetR, 0, Math.PI*2);
+  ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+  ctx.lineWidth = sweetR * 0.6;
+  ctx.stroke();
+
+  // Orbit rings for locked moons
   for (const m of moons) {
     if (!m.orbiting) continue;
     ctx.beginPath();
     ctx.arc(cx, cy, m.orbitR, 0, Math.PI*2);
-    ctx.strokeStyle = m.color + '1a';
+    ctx.strokeStyle = m.color + '22';
     ctx.lineWidth = 1;
     ctx.stroke();
   }
