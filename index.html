@@ -47,9 +47,15 @@
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 let W, H, cx, cy;
-function resize() { W = canvas.width = innerWidth; H = canvas.height = innerHeight; cx = W/2; cy = H/2; }
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  W = innerWidth; H = innerHeight; cx = W/2; cy = H/2;
+  canvas.width = W*dpr; canvas.height = H*dpr;
+  canvas.style.width = W+'px'; canvas.style.height = H+'px';
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+}
 resize();
-window.addEventListener('resize', resize);
+window.addEventListener('resize', () => { resize(); mkStars(); });
 
 // ─── Constants ───────────────────────────────────────────────────
 const PLANET_R      = 22;
@@ -63,42 +69,60 @@ const ORBIT_SPEED   = 3.5;    // captured moons orbit 3.5x faster than bare phys
 
 // ─── Audio ───────────────────────────────────────────────────────
 let ac;
-function audio() { if (!ac) ac = new (AudioContext || webkitAudioContext)(); return ac; }
+function audio() {
+  if (!ac) {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return null;
+    ac = new AC();
+  }
+  if (ac.state === 'suspended' && !document.hidden) ac.resume();
+  return ac;
+}
+function sfx(fn) { try { const a = audio(); if (a) fn(a); } catch (err) {} }
 
-function beep(freq, dur = 0.45, vol = 0.35) {
-  const a = audio(), osc = a.createOscillator(), g = a.createGain();
+function beep(freq, dur = 0.45, vol = 0.35) { sfx(a => {
+  const osc = a.createOscillator(), g = a.createGain();
   osc.connect(g); g.connect(a.destination);
   osc.frequency.value = freq; osc.type = 'sine';
   g.gain.setValueAtTime(vol, a.currentTime);
   g.gain.exponentialRampToValueAtTime(0.001, a.currentTime + dur);
   osc.start(); osc.stop(a.currentTime + dur);
-}
+}); }
 
-function boom() {
-  const a = audio(), buf = a.createBuffer(1, a.sampleRate * 0.35, a.sampleRate);
+function boom() { sfx(a => {
+  const buf = a.createBuffer(1, a.sampleRate * 0.35, a.sampleRate);
   const d = buf.getChannelData(0);
   for (let i = 0; i < d.length; i++) d[i] = (Math.random()*2-1) * (1 - i/d.length) ** 2;
   const src = a.createBufferSource(), g = a.createGain();
   src.buffer = buf; src.connect(g); g.connect(a.destination); g.gain.value = 0.25;
   src.start();
-}
+}); }
 
 // Sustained hum per orbiting moon
 const hums = new Map();
-function startHum(id, freq) {
-  const a = audio(), osc = a.createOscillator(), g = a.createGain();
+function startHum(id, freq) { sfx(a => {
+  const osc = a.createOscillator(), g = a.createGain();
   osc.connect(g); g.connect(a.destination);
   osc.frequency.value = freq; osc.type = 'sine'; g.gain.value = 0.055;
   osc.start();
   hums.set(id, { osc, g });
-}
+}); }
 function stopHum(id) {
   const h = hums.get(id); if (!h) return;
-  h.g.gain.exponentialRampToValueAtTime(0.001, audio().currentTime + 0.3);
-  h.osc.stop(audio().currentTime + 0.3);
   hums.delete(id);
+  sfx(a => {
+    // anchor the ramp at the current value, otherwise it ramps from t=0 and clicks
+    h.g.gain.setValueAtTime(h.g.gain.value, a.currentTime);
+    h.g.gain.exponentialRampToValueAtTime(0.001, a.currentTime + 0.3);
+    h.osc.stop(a.currentTime + 0.3);
+  });
 }
 function stopAllHums() { [...hums.keys()].forEach(stopHum); }
+// Hums are free-running oscillators; silence them when the tab/app is backgrounded
+document.addEventListener('visibilitychange', () => {
+  if (!ac) return;
+  if (document.hidden) ac.suspend(); else ac.resume();
+});
 
 // ─── Palette ─────────────────────────────────────────────────────
 const COLORS = ['#7ecef4','#f4c06f','#f47e7e','#a8f47e','#d07ef4','#f4a87e','#7ef4d0'];
@@ -115,8 +139,10 @@ function mkStars() {
 mkStars();
 
 // ─── Game state ──────────────────────────────────────────────────
-let moons = [], particles = [], flashes = [], score = 0, dead = false, uid = 0;
-let touch = null, spawnTimer = 0;
+let moons = [], particles = [], flashes = [], score = 0, captures = 0, dead = false, uid = 0;
+let touch = null, spawnTimer = 0, game = 0, diedAt = 0;
+const scoreEl = document.getElementById('score'), rateEl = document.getElementById('rate');
+const deathEl = document.getElementById('death'), finalEl = document.getElementById('final');
 
 function mkMoon() {
   const edge = Math.floor(Math.random()*4);
@@ -143,19 +169,26 @@ function burst(x, y, color, n=20) {
 
 function die() {
   if (dead) return;
-  dead = true; stopAllHums();
-  document.getElementById('final').textContent = score + (score===1?' moon captured':' moons captured');
-  document.getElementById('death').classList.add('show');
+  dead = true; touch = null; diedAt = performance.now(); stopAllHums();
+  const pts = Math.floor(score);
+  finalEl.textContent = pts + (pts===1?' point':' points') + ' · ' + captures + (captures===1?' moon':' moons');
+  deathEl.classList.add('show');
+}
+
+// Stagger the first two moons; the game token drops timers left over from a previous run
+function openingMoons(t1, t2) {
+  const g = ++game;
+  setTimeout(()=>{ if(!dead && g===game) moons.push(mkMoon()); }, t1);
+  setTimeout(()=>{ if(!dead && g===game) moons.push(mkMoon()); }, t2);
 }
 
 function restart() {
-  moons=[]; particles=[]; flashes=[]; score=0; dead=false; spawnTimer=0; uid=0;
-  document.getElementById('score').textContent='0';
-  document.getElementById('rate').textContent='';
-  document.getElementById('death').classList.remove('show');
-  // stagger first two moons
-  setTimeout(()=>{ if(!dead) moons.push(mkMoon()); }, 600);
-  setTimeout(()=>{ if(!dead) moons.push(mkMoon()); }, 2400);
+  if (!dead || performance.now() - diedAt < 600) return; // swallow the in-flight steering tap
+  moons=[]; particles=[]; flashes=[]; score=0; captures=0; dead=false; spawnTimer=0; uid=0; touch=null;
+  scoreEl.textContent='0';
+  rateEl.textContent='';
+  deathEl.classList.remove('show');
+  openingMoons(600, 2400);
   requestAnimationFrame(frame);
 }
 
@@ -176,8 +209,8 @@ function tryCapture() {
       m.orbitAngle = Math.atan2(m.y-cy, m.x-cx);
       m.orbitDir   = cross >= 0 ? 1 : -1;
       m.vx = m.vy  = 0;
-      score++;
-      document.getElementById('score').textContent = score;
+      score++; captures++;
+      scoreEl.textContent = Math.floor(score);
       beep(m.freq);
       startHum(m.id, m.freq);
       // capture flash
@@ -190,15 +223,19 @@ function tryCapture() {
 
 // ─── Input ───────────────────────────────────────────────────────
 function pt(e) { return e.touches ? e.touches[0] : e; }
-canvas.addEventListener('mousedown',  e => { audio(); touch={x:pt(e).clientX,y:pt(e).clientY}; });
+canvas.addEventListener('mousedown',  e => { sfx(()=>{}); touch={x:pt(e).clientX,y:pt(e).clientY}; });
 canvas.addEventListener('mousemove',  e => { if(touch) touch={x:pt(e).clientX,y:pt(e).clientY}; });
 canvas.addEventListener('mouseup',    () => { tryCapture(); touch=null; });
-canvas.addEventListener('touchstart', e => { e.preventDefault(); try{audio();}catch(err){} touch={x:pt(e).clientX,y:pt(e).clientY}; }, {passive:false});
+canvas.addEventListener('touchstart', e => { e.preventDefault(); sfx(()=>{}); touch={x:pt(e).clientX,y:pt(e).clientY}; }, {passive:false});
 canvas.addEventListener('touchmove',  e => { e.preventDefault(); if(touch) touch={x:pt(e).clientX,y:pt(e).clientY}; }, {passive:false});
-canvas.addEventListener('touchend',   e => { e.preventDefault(); tryCapture(); touch=null; }, {passive:false});
+canvas.addEventListener('touchend',   e => {
+  e.preventDefault();
+  if (e.touches.length) { touch={x:e.touches[0].clientX,y:e.touches[0].clientY}; return; }
+  tryCapture(); touch=null;
+}, {passive:false});
 
-document.getElementById('death').addEventListener('click', restart);
-document.getElementById('death').addEventListener('touchstart', e => { e.preventDefault(); restart(); }, {passive:false});
+deathEl.addEventListener('click', restart);
+deathEl.addEventListener('touchstart', e => { e.preventDefault(); restart(); }, {passive:false});
 
 // ─── Main loop ───────────────────────────────────────────────────
 let last = 0;
@@ -225,7 +262,6 @@ function frame(ts) {
       m.y = cy + Math.sin(m.orbitAngle)*m.orbitR;
       // Passive income: +1 pt/sec per orbiting moon
       score += dt;
-      document.getElementById('score').textContent = Math.floor(score);
       continue;
     }
 
@@ -284,7 +320,8 @@ function frame(ts) {
 
   // Update rate display
   const orbitCount = moons.filter(m=>m.orbiting).length;
-  document.getElementById('rate').textContent = orbitCount > 0 ? `+${orbitCount}/sec` : '';
+  scoreEl.textContent = Math.floor(score);
+  rateEl.textContent = orbitCount > 0 ? `+${orbitCount}/sec` : '';
 
   // Particles
   for (const p of particles) {
@@ -391,8 +428,7 @@ function draw() {
 }
 
 // ─── Boot ────────────────────────────────────────────────────────
-setTimeout(()=>moons.push(mkMoon()), 700);
-setTimeout(()=>moons.push(mkMoon()), 2600);
+openingMoons(700, 2600);
 requestAnimationFrame(frame);
 </script>
 </body>
